@@ -1,0 +1,4 @@
+# Test-only dependencies. Runtime deps live in requirements.txt.
+#   pip install -r requirements-dev.txt && python -m pytest
+pytest
+pytest-asyncio

@@ -1,0 +1,17 @@
+{
+  "gemini_api_key": "PASTE_YOUR_GEMINI_API_KEY_HERE",
+  "os_system": "windows",
+  "assistant_name": "JARVIS",
+  "user_name": "",
+  "morning_brief_enabled": true,
+  "ui_color": "#3fa9f5",
+
+  "_comment_mode": "free = only what a free API key sustains (DuckDuckGo instead of grounded search, lite model, no continuous vision). paid = everything on.",
+  "mode": "free",
+
+  "_comment_location": "Overrides everything else for the local news briefing. 'City' or 'City, Region'. Leave empty to use a city stored in memory, then IP geolocation.",
+  "location": "",
+
+  "_comment_ip_geolocation": "Set false to never look up your location by IP. Skipped anyway whenever a city is already known from 'location' above or from long-term memory.",
+  "ip_geolocation": true
+}

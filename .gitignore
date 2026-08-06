@@ -1,0 +1,46 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Secrets — NEVER commit these ──────────────────────────────────────────────
+# Contains your Gemini API key. Use config/api_keys.example.json as a template.
+config/api_keys.json
+# Self-signed TLS keypair for the dashboard. Generated locally on first run.
+config/certs/
+
+# ── Personal data ─────────────────────────────────────────────────────────────
+# Long-term memory: name, city, job, relationships, projects, session summaries.
+# long_term.json is the pre-v2 store, kept on disk as a backup after migration.
+memory/long_term.json
+memory/memory.db
+memory/memory.db-wal
+memory/memory.db-shm
+
+# ── Runtime artifacts ─────────────────────────────────────────────────────────
+uploads/
+logs/
+*.log
+dashboard/static/crypto-js.min.js
+
+# ── Tooling / editors ─────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
