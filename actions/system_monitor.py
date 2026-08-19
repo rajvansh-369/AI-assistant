@@ -69,15 +69,31 @@ def _nvml_gpu() -> float:
         return -1.0
 
 
+# This runs on the 10-second monitor loop for the life of the process, so a
+# missing backend must be discovered once, not re-imported (and re-initialised)
+# on every tick.
+_pynvml:    object = None
+_pynvml_ok: object = None   # None=untested  True=works  False=unavailable
+_wmi_conn:  object = None
+_wmi_ok:    object = None
+
+
 def _get_gpu_usage() -> float:
     # pynvml — subprocess-free, works everywhere if installed
-    try:
-        import pynvml  # type: ignore
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-    except Exception:
-        pass
+    global _pynvml, _pynvml_ok
+    if _pynvml_ok is None:
+        try:
+            import pynvml  # type: ignore
+            pynvml.nvmlInit()
+            _pynvml, _pynvml_ok = pynvml, True
+        except Exception:
+            _pynvml_ok = False
+    if _pynvml_ok:
+        try:
+            h = _pynvml.nvmlDeviceGetHandleByIndex(0)
+            return float(_pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
+        except Exception:
+            _pynvml_ok = False
 
     return _nvml_gpu()
 
@@ -96,16 +112,20 @@ def _get_cpu_temp() -> float:
     except Exception:
         pass
 
-    # Windows: wmi module (pure Python COM, zero subprocess)
-    if _OS == "Windows":
+    # Windows: wmi module (pure Python COM, zero subprocess). The connection is
+    # kept — building a COM object per read cost more than the read itself.
+    global _wmi_conn, _wmi_ok
+    if _OS == "Windows" and _wmi_ok is not False:
         try:
-            import wmi  # type: ignore
-            w = wmi.WMI(namespace="root/wmi")
-            tz = w.MSAcpi_ThermalZoneTemperature()
+            if _wmi_conn is None:
+                import wmi  # type: ignore
+                _wmi_conn = wmi.WMI(namespace="root/wmi")
+            tz = _wmi_conn.MSAcpi_ThermalZoneTemperature()
+            _wmi_ok = True
             if tz:
                 return (tz[0].CurrentTemperature / 10.0) - 273.15
         except Exception:
-            pass
+            _wmi_ok, _wmi_conn = False, None
 
     return -1.0
 

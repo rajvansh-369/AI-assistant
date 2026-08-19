@@ -178,6 +178,17 @@ class JarvisLive:
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
 
+    def _log_turn(self, line: str) -> None:
+        """Append to the session transcript, bounded.
+
+        The process is designed to stay up for days; the summary uses the last
+        40 turns and proactive mode the last 8, so keeping everything ever said
+        is only a slow leak.
+        """
+        self._session_log.append(line)
+        if len(self._session_log) > 120:
+            del self._session_log[:-80]
+
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
         if self._dashboard is None:
@@ -739,7 +750,7 @@ class JarvisLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
-                                self._session_log.append(f"User: {full_in}")
+                                self._log_turn(f"User: {full_in}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
                                         "type": "log", "speaker": "user",
@@ -751,7 +762,7 @@ class JarvisLive:
                             full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
-                                self._session_log.append(f"{self._asst_name}: {full_out}")
+                                self._log_turn(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
                                         "type": "log", "speaker": "jarvis",
@@ -1026,8 +1037,11 @@ class JarvisLive:
 
     async def _save_session_summary(self) -> None:
         """Summarise the current session in 1-2 sentences and save to long_term.json."""
-        log = self._session_log
-        if len(log) < 3:          # need at least one exchange to be worth saving
+        # Not named `log`: that shadowed the module logger, so the except branch
+        # below called .error() on a list and raised AttributeError instead of
+        # logging — which killed the shutdown task that was awaiting this.
+        turns = self._session_log
+        if len(turns) < 3:        # need at least one exchange to be worth saving
             return
         self._session_log = []    # reset immediately so the next session starts clean
 
@@ -1036,7 +1050,7 @@ class JarvisLive:
         lang = (lang_entry.get("value", "") if isinstance(lang_entry, dict) else str(lang_entry)).strip()
         lang = lang or "English"
 
-        convo = "\n".join(log[-40:])   # cap at last 40 turns to stay within token budget
+        convo = "\n".join(turns[-40:])   # cap at last 40 turns to stay within token budget
         prompt = (
             f"Summarize this conversation in 1-2 sentences in {lang}. "
             "Focus on what the user accomplished or discussed. "
@@ -1249,6 +1263,10 @@ class JarvisLive:
                     VISION_STREAM.on_session_start()
 
                     connected = True
+                    # A healthy connection clears the exponential backoff.
+                    # Without this, one bad patch of network pinned every later
+                    # reconnect at the 60s ceiling for the rest of the process.
+                    self._conn_backoff = 3
                     log.info("Resumed." if self._resume_handle else "Connected.")
                     self.ui.set_state("LISTENING")
                     self.ui.write_log("SYS: JARVIS online.")
@@ -1323,7 +1341,7 @@ class JarvisLive:
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
                     log.info("New API key saved — reconnecting...")
-                    _conn_backoff = 3
+                    self._conn_backoff = 3
                     continue
 
                 # Network / timeout errors — log clearly and back off

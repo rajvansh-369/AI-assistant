@@ -278,15 +278,24 @@ async def shutdown_jarvis_tool(params: dict, ctx: ToolContext) -> str:
     ctx.log_line("SYS: Shutdown requested.")
 
     async def _do_shutdown():
-        await j._save_session_summary()
-        if j.session:
+        # The exit lives in a finally: a failure anywhere in the cleanup —
+        # summary API call, goodbye injection — must still end the process.
+        # Before this, a raise here left JARVIS running after saying
+        # "Shutting down", with no second chance at stopping him.
+        try:
             try:
-                await j._inject_text("Say a brief natural goodbye to the user.", "shutdown")
-            except Exception:
-                pass
-        await asyncio.sleep(1.5)
-        import os as _os
-        _os._exit(0)
+                await j._save_session_summary()
+            except Exception as e:
+                log.error(f"Session summary failed during shutdown: {e}")
+            if j.session:
+                try:
+                    await j._inject_text("Say a brief natural goodbye to the user.", "shutdown")
+                except Exception:
+                    pass
+            await asyncio.sleep(1.5)
+        finally:
+            import os as _os
+            _os._exit(0)
 
     # Deliberately not awaited: the shutdown has to outlive this function
     # response, otherwise the goodbye never reaches the model.

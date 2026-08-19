@@ -57,7 +57,13 @@ def available() -> bool:
 
 def _client():
     from google import genai
-    return genai.Client(api_key=get_api_key())
+    # http_options.timeout is in milliseconds. Without it the SDK default
+    # applies, and an embed call on the connect path could stall the whole
+    # session start far past what retrieval quality is worth.
+    return genai.Client(
+        api_key=get_api_key(),
+        http_options={"timeout": int(EMBED_TIMEOUT * 1000)},
+    )
 
 
 def embed(texts: list[str]) -> list[np.ndarray] | None:

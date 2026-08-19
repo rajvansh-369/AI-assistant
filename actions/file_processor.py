@@ -25,7 +25,10 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 from core import budget
+from core.log import get_logger
 from core.settings import get_api_key as _get_api_key
+
+log = get_logger("fileproc")
 
 def _gemini_client():
     from google import genai

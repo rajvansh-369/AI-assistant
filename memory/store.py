@@ -40,7 +40,7 @@ log = get_logger("memory.store")
 DB_PATH   = BASE_DIR / "memory" / "memory.db"
 JSON_PATH = BASE_DIR / "memory" / "long_term.json"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: The categories the model is allowed to write to. `identity` is special: it is
 #: never dropped from the prompt, so it stays small by convention.
@@ -76,10 +76,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS monitors (
-    slug      TEXT PRIMARY KEY,
-    topic     TEXT NOT NULL,
-    last_hash TEXT,
-    updated   TEXT
+    slug       TEXT PRIMARY KEY,
+    topic      TEXT NOT NULL,
+    last_hash  TEXT,
+    last_check TEXT,
+    updated    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -122,6 +123,7 @@ def connect() -> sqlite3.Connection:
 
         _conn = conn
         _migrate_from_json(conn)
+        _upgrade(conn)
         return conn
 
 
@@ -240,6 +242,31 @@ def _unwrap(entry: Any) -> tuple[str, str]:
     if isinstance(entry, dict):
         return str(entry.get("value", "")).strip(), str(entry.get("updated") or _today())
     return str(entry).strip(), _today()
+
+
+def _upgrade(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to SCHEMA_VERSION.
+
+    v1 → v2: the monitors table gains `last_check`.  Without it, the daily gate
+    in background_monitor never persisted — `replace_monitors` silently dropped
+    the field — so every monitored topic hit the news API on every 30-minute
+    cycle instead of once a day.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    try:
+        version = int(row["value"]) if row else SCHEMA_VERSION
+    except (TypeError, ValueError):
+        version = SCHEMA_VERSION
+
+    if version < 2:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(monitors)")}
+        if "last_check" not in cols:
+            conn.execute("ALTER TABLE monitors ADD COLUMN last_check TEXT")
+        conn.execute(
+            "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+        )
+        conn.commit()
+        log.info(f"Schema upgraded v{version} → v{SCHEMA_VERSION}")
 
 
 # ── facts ─────────────────────────────────────────────────────────────────────
@@ -379,18 +406,22 @@ def recent_sessions(limit: int = 3) -> list[dict]:
 def get_monitors() -> dict[str, dict]:
     rows = connect().execute("SELECT * FROM monitors").fetchall()
     return {
-        r["slug"]: {"topic": r["topic"], "last_hash": r["last_hash"], "updated": r["updated"]}
+        r["slug"]: {"topic": r["topic"], "last_hash": r["last_hash"],
+                    "last_check": r["last_check"] or "", "updated": r["updated"]}
         for r in rows
     }
 
 
-def put_monitor(slug: str, topic: str, last_hash: str | None = None) -> None:
+def put_monitor(slug: str, topic: str, last_hash: str | None = None,
+                last_check: str | None = None) -> None:
     with txn() as conn:
         conn.execute(
-            "INSERT INTO monitors (slug, topic, last_hash, updated) VALUES (?, ?, ?, ?) "
+            "INSERT INTO monitors (slug, topic, last_hash, last_check, updated) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(slug) DO UPDATE SET topic = excluded.topic, "
-            "last_hash = excluded.last_hash, updated = excluded.updated",
-            (slug, topic, last_hash, _today()),
+            "last_hash = excluded.last_hash, last_check = excluded.last_check, "
+            "updated = excluded.updated",
+            (slug, topic, last_hash, last_check, _today()),
         )
 
 
@@ -401,11 +432,17 @@ def delete_monitor(slug: str) -> bool:
 
 
 def replace_monitors(monitors: dict[str, dict]) -> None:
-    """Overwrite the whole monitor set — the shape `memory_txn` callers expect."""
+    """Overwrite the whole monitor set — the shape `memory_txn` callers expect.
+
+    `last_check` must round-trip: background_monitor's once-a-day gate reads it,
+    and dropping it here is what used to reduce "daily" to "every cycle".
+    """
     with txn() as conn:
         conn.execute("DELETE FROM monitors")
         conn.executemany(
-            "INSERT INTO monitors (slug, topic, last_hash, updated) VALUES (?, ?, ?, ?)",
-            [(slug, f.get("topic", slug), f.get("last_hash"), f.get("updated") or _today())
+            "INSERT INTO monitors (slug, topic, last_hash, last_check, updated) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(slug, f.get("topic", slug), f.get("last_hash"),
+              f.get("last_check") or None, f.get("updated") or _today())
              for slug, f in monitors.items() if isinstance(f, dict)],
         )
