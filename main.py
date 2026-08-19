@@ -73,6 +73,11 @@ def _load_system_prompt() -> str:
             "Never simulate or guess results — always call the appropriate tool."
         )
 
+#: Prebuilt Live API voice. "Charon" is documented as *informative* — accurate
+#: for a briefing, flat for a conversation. Override with `voice` in
+#: config/api_keys.json; the full set of 30 is auditionable in AI Studio.
+DEFAULT_VOICE = "Charon"
+
 WORLD_NEWS_QUERY = "top world news today"
 
 
@@ -156,9 +161,15 @@ class JarvisLive:
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
         self._barge: BargeInDetector | None = None   # built in _listen_audio
+        # Affective dialog is model- and version-dependent. Assume it works,
+        # and drop it permanently for this process if a connect is rejected
+        # because of it — a flatter voice beats an assistant that will not start.
+        self._affective_supported  = True
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
-        self.ui.on_interrupt      = self.interrupt
+        # Called with no arguments from the HUD button; the only path that stops
+        # him while barge-in is off.
+        self.ui.on_interrupt      = lambda: self.interrupt(source="button")
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
@@ -259,6 +270,15 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
+    def barge_in_enabled(self) -> bool:
+        """One switch for the whole interruption policy.
+
+        Read by `_build_config` (whether the server may interrupt itself) and by
+        `_listen_audio` (whether the mic stays open while he talks). They must
+        agree, or the server would interrupt on audio the mic never sent.
+        """
+        return bool(get_settings().extra.get("barge_in", self.BARGE_IN))
+
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
@@ -328,6 +348,18 @@ class JarvisLive:
             session_resumption=types.SessionResumptionConfig(
                 handle=self._resume_handle
             ),
+            # NO_INTERRUPTION keeps voice activity detection on — turn-taking
+            # still works normally — but stops detected speech from cutting the
+            # model off mid-answer. Without it the server interrupts on its own,
+            # and no amount of client-side tuning can prevent that, because the
+            # decision is made on the server from the audio we send.
+            realtime_input_config=types.RealtimeInputConfig(
+                activity_handling=(
+                    types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS
+                    if self.barge_in_enabled()
+                    else types.ActivityHandling.NO_INTERRUPTION
+                )
+            ),
             # Without this an audio+video session runs out of context in about
             # two minutes — every frame is tokens that never fall off on their
             # own.  The sliding window evicts the oldest turns instead of the
@@ -335,13 +367,20 @@ class JarvisLive:
             context_window_compression=types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow(),
             ),
+            # Native-audio models pick the output language themselves from the
+            # conversation — speech_config.language_code is not supported here
+            # and setting it is an error, not a hint.
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=_cfg.extra.get("voice", DEFAULT_VOICE)
                     )
                 )
             ),
+            # Lets the model hear *how* something was said and answer in kind,
+            # rather than reading every reply in the same register. Dropped
+            # automatically if the model rejects it — see _affective_supported.
+            enable_affective_dialog=self._affective_supported,
         )
 
     def _tool_ctx(self) -> ToolContext:
@@ -399,14 +438,25 @@ class JarvisLive:
             response["silent"] = True
         return types.FunctionResponse(id=fc.id, name=name, response=response)
 
-    #: Barge-in sensitivity — the *local* fast path only. The authoritative
-    #: signal is `server_content.interrupted`; this exists so audio stops
-    #: without waiting for a round trip, and it must therefore be conservative:
-    #: a false positive here cuts JARVIS off mid-sentence for no reason, while a
-    #: miss only costs the few hundred milliseconds until the server says so.
+    #: Whether talking over JARVIS interrupts him. **Off by default**: with no
+    #: echo cancellation the microphone hears the speakers, so "someone is
+    #: talking" and "JARVIS is talking" are not reliably distinguishable, and
+    #: every false positive cuts him off mid-sentence. While off, the Interrupt
+    #: button is the only thing that stops him — which is unambiguous.
     #:
-    #: Overridable per-install in config/api_keys.json via `barge_in_rms`,
-    #: `barge_in_blocks`, `barge_in_margin`; `barge_in: false` disables it.
+    #: Set `barge_in: true` in config/api_keys.json to turn voice interruption
+    #: back on. That switch controls the whole policy, not just the local
+    #: heuristic: see `_build_config` (ActivityHandling) and `_listen_audio`
+    #: (mic gating).
+    BARGE_IN = False
+
+    #: Sensitivity of the *local* fast path, used only when barge-in is on. The
+    #: authoritative signal is `server_content.interrupted`; this exists so audio
+    #: stops without waiting for a round trip, and it must therefore be
+    #: conservative — a false positive cuts JARVIS off for no reason, a miss only
+    #: costs the few hundred milliseconds until the server says so.
+    #:
+    #: Overridable via `barge_in_rms`, `barge_in_blocks`, `barge_in_margin`.
     BARGE_IN_RMS    = 1500
 
     #: Mic blocks are 1024 samples @ 16 kHz = 64 ms. Seven of them is ~450 ms of
@@ -546,14 +596,17 @@ class JarvisLive:
 
         # Barge-in tuning, overridable per-install from config/api_keys.json.
         _extra       = get_settings().extra
-        barge_on     = bool(_extra.get("barge_in", True))
+        barge_on     = self.barge_in_enabled()
         barge_rms    = float(_extra.get("barge_in_rms",    self.BARGE_IN_RMS))
         barge_blocks = int(_extra.get("barge_in_blocks",   self.BARGE_IN_BLOCKS))
         barge_margin = float(_extra.get("barge_in_margin", self.BARGE_IN_MARGIN))
-        log.info(
-            f"✋ Barge-in {'on' if barge_on else 'off'} "
-            f"(rms>{barge_rms:.0f}, {barge_blocks} blocks, {barge_margin:.1f}x floor)"
-        )
+        if barge_on:
+            log.info(
+                f"✋ Barge-in on (rms>{barge_rms:.0f}, {barge_blocks} blocks, "
+                f"{barge_margin:.1f}x floor)"
+            )
+        else:
+            log.info("✋ Barge-in off — only the Interrupt button stops him")
 
         self._barge = BargeInDetector(
             rms_threshold = barge_rms,
@@ -572,7 +625,12 @@ class JarvisLive:
 
             if jarvis_speaking:
                 if not barge_on:
-                    return        # explicitly disabled: hard-gate the mic
+                    # Hard-gate the mic. Not only to stop interruptions — with
+                    # no echo cancellation the mic hears the speakers, so
+                    # anything sent now is JARVIS's own voice, which the server
+                    # would transcribe as something the *user* said and fold
+                    # into the conversation.
+                    return
                 rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32)))))
                 if self._barge.feed(rms, time.monotonic()):
                     log.info(
@@ -645,6 +703,13 @@ class JarvisLive:
                         # and tells us when it stopped generating because the
                         # user spoke. That is the real barge-in signal; the RMS
                         # check in _listen_audio is only a local fast path.
+                        #
+                        # Still honoured when barge-in is off, where it should
+                        # never arrive: NO_INTERRUPTION plus a gated mic leaves
+                        # the server nothing to trigger on. If it does arrive,
+                        # the model has already stopped generating, so playing
+                        # out the rest of the queue would only voice half a
+                        # sentence it has abandoned.
                         if sc.interrupted:
                             self.interrupt(source="server")
 
@@ -1227,6 +1292,19 @@ class JarvisLive:
                 if not connected and self._resume_handle:
                     log.warning("Resume handle rejected — retrying with a fresh session.")
                     self._resume_handle = None
+
+                # Affective dialog is not available on every model or API
+                # version, and the rejection arrives at connect time. Retrying
+                # with the same config would loop forever, so give it up for
+                # this process: a flatter voice beats no assistant.
+                if (not connected and self._affective_supported
+                        and "affective" in err_str.lower()):
+                    log.warning(
+                        "Affective dialog rejected by the server — reconnecting without it."
+                    )
+                    self.ui.write_log("SYS: Expressive voice unavailable on this model.")
+                    self._affective_supported = False
+                    continue
 
                 # 1007 is the websocket "invalid frame payload" close code; the
                 # server uses it for BOTH a bad key and a rejected payload, so it

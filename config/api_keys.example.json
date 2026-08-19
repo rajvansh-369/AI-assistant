@@ -13,5 +13,16 @@
   "location": "",
 
   "_comment_ip_geolocation": "Set false to never look up your location by IP. Skipped anyway whenever a city is already known from 'location' above or from long-term memory.",
-  "ip_geolocation": true
+  "ip_geolocation": true,
+
+  "_comment_voice": "Prebuilt Live API voice. 30 are available and you can audition them all in AI Studio. Character per Google's docs: Charon=Informative (default), Gacrux=Mature, Schedar=Even, Algieba=Smooth, Sulafat=Warm, Achird=Friendly, Enceladus=Breathy, Zubenelgenubi=Casual, Kore=Firm, Puck=Upbeat.",
+  "voice": "Charon",
+
+  "_comment_barge_in": "false (default): talking over JARVIS never interrupts him, and the mic is muted while he speaks so his own voice is not transcribed as yours. Only the Interrupt button stops him. true: speech interrupts him, tuned by the three settings below.",
+  "barge_in": false,
+
+  "_comment_barge_in_tuning": "Only used when barge_in is true. rms = absolute floor below which nothing counts as speech; blocks = how many consecutive 64ms blocks must be loud; margin = how far above the measured speaker bleed speech has to sit. Raise them if he interrupts himself, lower them if he is hard to interrupt.",
+  "barge_in_rms": 1500,
+  "barge_in_blocks": 7,
+  "barge_in_margin": 2.5
 }

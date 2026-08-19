@@ -90,9 +90,34 @@ Continuous vision is in `budget.FREE_BLOCKED` — a frame a second indefinitely 
 
 Five booleans (`_pending_vision`, `_vision_cam_active`, `_vision_close_pending`, `_vision_busy`, `_vision_last_time`) coordinate that across two turns — still the most fragile state machine in the codebase. When the stream is live for the requested source, `screen_process` short-circuits with `[VISION_LIVE]` and never enters it.
 
+### How he sounds
+
+Native-audio models generate speech directly rather than reading synthesised text, so three things control the voice and only one of them is a setting.
+
+**The system prompt is the biggest lever.** The audio is generated *from the words*, so instructions about writing are instructions about delivery. `prompt.txt` previously carried three separate directions to be clipped — "No fluff", "Respond as fast as you can", "Speak immediately" — and the result sounded like a terminal. The `HOW YOU SOUND` section now directs contractions, varied sentence length, reacting before reporting, and spoken-form numbers ("about half past two", not "14:31"), with an explicit list of the tells that make an assistant sound synthetic.
+
+**`enable_affective_dialog`** lets the model hear *how* something was said and answer in kind. It is not available on every model or API version and the rejection arrives at connect time, so `_affective_supported` drops it for the process and reconnects rather than retrying the same config forever — a flatter voice beats an assistant that will not start.
+
+**`voice`** selects one of 30 prebuilt voices, auditionable in AI Studio. The default was `Charon`, which Google documents as *Informative* — right for a briefing, flat for a conversation.
+
+`speech_config.language_code` is deliberately never set: native-audio models choose the output language from the conversation, and setting it explicitly is rejected rather than treated as a hint.
+
 ### Barge-in
 
-Two paths stop JARVIS mid-sentence, and only one of them is authoritative.
+**Off by default.** With no echo cancellation the microphone hears the speakers, so "someone is talking" and "JARVIS is talking" are not reliably distinguishable, and every false positive cuts him off mid-sentence. While off, the HUD's Interrupt button is the only thing that stops him — which is unambiguous.
+
+`barge_in` in `config/api_keys.json` is one switch over the whole policy, because switching off any single part leaves the others running:
+
+| `barge_in` | Server (`ActivityHandling`) | Mic while speaking | Local RMS check |
+|---|---|---|---|
+| `false` (default) | `NO_INTERRUPTION` | gated | disabled |
+| `true` | `START_OF_ACTIVITY_INTERRUPTS` | open | enabled |
+
+`NO_INTERRUPTION` rather than disabling activity detection: turn-taking still has to work, so the server must keep detecting when the user stops speaking — it just must not act on that mid-answer. This is the half that cannot be fixed client-side, since the server decides from audio we already sent.
+
+The mic gate is not only about interruptions. Anything sent while he talks is his own voice, which the server transcribes as something the *user* said and folds into the conversation.
+
+The rest of this section applies when `barge_in` is `true`. Two paths then stop him, and only one is authoritative.
 
 **Server** — the Live API runs its own VAD over the mic stream we are already sending and sets `server_content.interrupted` when it stops generating because the user spoke. `_receive_audio` calls `interrupt(source="server")`, which drains `audio_in_queue`. This is the real barge-in.
 

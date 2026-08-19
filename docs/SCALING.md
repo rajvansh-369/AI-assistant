@@ -31,7 +31,13 @@ Two things the work turned up that are worth remembering:
 
 The decision logic was pulled out into `core/barge_in.py` — as a closure inside the sounddevice callback it was untestable, and both bugs above were found by simulation rather than by reading. 22 tests, including a replay of the exact RMS values from the user's log.
 
-Not verified live: the fix is proven against recorded values and simulation, not against a real session. Worth watching the log for `✋ Barge-in` lines that do not correspond to actually speaking.
+**Then turned off entirely, by request.** Tuning the heuristic was treating the symptom: without echo cancellation, "someone is talking" and "JARVIS is talking" are not reliably separable, so any threshold is a guess that will sometimes cut him off. Voice interruption is now off by default and the Interrupt button is the only thing that stops him.
+
+That required more than disabling the local check. The server decides interruptions on its own, from audio we already sent, so no client-side change can prevent them — the switch is `ActivityHandling.NO_INTERRUPTION` in `realtime_input_config`. Deliberately *not* `automatic_activity_detection.disabled`: turn-taking still needs the server to know when the user stopped speaking, it just must not act on it mid-answer. The mic is also gated while he talks, which matters independently of interruption — anything sent then is his own voice, and the server transcribes it as something the user said.
+
+`barge_in` is now one switch over all three parts, with a test asserting the halves cannot drift into an incoherent state (gated mic but server interruption still on). The tuned heuristic is kept behind `barge_in: true` for anyone with a headset, where the premise actually holds.
+
+Not verified live: proven against recorded values, simulation and config assertions, not against a real session.
 
 ---
 
